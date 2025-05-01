@@ -7,7 +7,7 @@ name = "mcp-python-client"
 version = "0.1.0"
 description = "A reusable Python client for interacting with MCP servers and LLMs"
 authors = [
-    {name = "MCP Client Team", email = "example@example.com"},
+    {name = "MCP Client Team", email = "email@ling-li.com"},
 ]
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,8 +32,8 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/yourusername/mcp-python-client"
-"Bug Tracker" = "https://github.com/yourusername/mcp-python-client/issues"
+"Homepage" = "https://github.com/lingster/mcp-python-client"
+"Bug Tracker" = "https://github.com/lingster/mcp-python-client/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mcp_python_client"]
