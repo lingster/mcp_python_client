@@ -5,10 +5,16 @@ build-backend = "hatchling.build"
 [project]
 name = "mcp-python-client"
 version = "0.1.0"
-description = "A reusable Python client for interacting with MCP servers and LLMs"
+description = "Python client for interacting with MCP servers and LLMs"
 authors = [
-    {name = "MCP Client Team", email = "email@ling-li.com"},
+    {name = "Ling Li", email = "email@ling-li.com"},
 ]
+
+maintainers = [
+    {name = "Ling Li", email = "email@ling-li.com"},
+]
+
+
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
