@@ -80,6 +80,11 @@ Example configuration file:
 
 See the [documentation](https://github.com/yourusername/mcp-python-client) for more advanced usage examples and API details.
 
+## Publishing
+``` 
+uv build
+uv publish
+```
 ## License
 
 MIT

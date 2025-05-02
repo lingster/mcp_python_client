@@ -14,6 +14,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import Resource, Tool
 
+from .exceptions import MissingConfigError
 from ..config import MCPConfig, ServerConfig
 
 # Configure the logger
@@ -58,6 +59,7 @@ class MCPClient:
     def __init__(
         self,
         config_path: Optional[str] = None,
+        mcp_servers: Optional[dict] = None,
         api_key: Optional[str] = None,
         model: str = "anthropic/claude-3-7-sonnet-20241024",
         max_tokens: int = 4096,
@@ -77,7 +79,12 @@ class MCPClient:
             model_map: Optional custom model map for LiteLLM.
         """
         try:
-            self.config = MCPConfig.load_from_file(config_path)
+            if config_path:
+                self.config = MCPConfig.load_from_file(config_path)
+            elif mcp_servers:
+                self.config = MCPConfig.model_validate(mcp_servers)
+            else:
+                logger.warning("No MCP server configuration found. The client will operate without MCP servers.")
         except FileNotFoundError:
             # Create an empty config if none is found - allows using the client without MCP servers
             self.config = MCPConfig()
@@ -91,12 +98,7 @@ class MCPClient:
         if debug:
             litellm._turn_on_debug()
         
-        # Apply model map
-        if model_map:
-            litellm.model_map.update(model_map)
-        else:
-            litellm.model_map.update(DEFAULT_MODEL_MAP)
-        
+
         # Set API key based on model provider
         if base_url:
             litellm.api_base = base_url
@@ -363,7 +365,7 @@ class MCPClient:
             
             return error_message, messages
             
-    def process_query(
+    async def process_query(
         self,
         query: str,
         system_prompt: str = "You are a helpful assistant.",
@@ -390,9 +392,15 @@ class MCPClient:
         ]
 
         # Synchronous implementation - run until we get a final response
-        final_response = ""
-        
+        return await self.complete(messages, temperature, tools)
+
+    async def complete(self,
+                 messages: list[dict],
+                 temperature: float = 0.7,
+                 tools: list[dict[str, Any]] | None = None):
         # We need to handle multiple turns of conversation potentially
+        if not tools:
+            tools = self.get_available_tools()
         while True:
             # Call LLM with current messages
             start_time = time.monotonic()
@@ -406,34 +414,35 @@ class MCPClient:
                 api_base=self.base_url,
             )
             logger.info(f"Received response in {time.monotonic() - start_time:.2f}s")
-            
+
             # Check if we have tool calls
             if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
                 for tool_call in response.choices[0].message.tool_calls:
-                    tool_name = tool_call.function.name
                     tool_args_str = tool_call.function.arguments
                     tool_id = tool_call.id
 
+                    tool_name = tool_call.function.name
                     try:
                         # Call the tool and update messages
                         tool_args_dict = json.loads(tool_args_str)
                         # We need to run the async function in a synchronous context
-                        tool_result = asyncio.run(self.call_tool(tool_name, tool_args_dict))
-                        
+                        tool_result = await self.call_tool(tool_name, tool_args_dict)
+
                         result_text = tool_result.get("text", "Tool executed successfully")
                         if tool_result.get("error"):
                             result_text = f"Error executing tool: {result_text}"
-                        
+
                         logger.debug(f"[Tool result: {result_text}]")
                     except Exception as ex:
                         logger.exception(f"Error calling tool: {ex}")
                         result_text = f"Error executing tool {tool_name}: {str(ex)}"
                         print(f"[Tool error: {result_text}]")
-                    
+
                     # Add the tool call to messages
+
                     messages.append({
                         "role": "assistant",
-                        "content": None,
+                        "content": "",
                         "tool_calls": [{
                             "id": tool_id,
                             "type": "function",
@@ -443,7 +452,7 @@ class MCPClient:
                             }
                         }]
                     })
-                    
+
                     # Add the tool result to messages
                     messages.append({
                         "role": "tool",
@@ -451,16 +460,8 @@ class MCPClient:
                         "name": tool_name,
                         "content": result_text
                     })
-                    
-                # Continue the loop to make another LLM call with the updated messages
-                continue
-            else:
-                # No tool calls means we have a final response
-                if hasattr(response.choices[0], 'message') and hasattr(response.choices[0].message, 'content'):
-                    final_response = response.choices[0].message.content
-                break
-        
-        return final_response
+            elif hasattr(response.choices[0], 'message') and hasattr(response.choices[0].message, 'content'):
+                return response.choices[0].message.content
 
     async def aprocess_query(
         self,
@@ -491,10 +492,10 @@ class MCPClient:
         # Initial call to get model response or tool call
         try:
             if stream:
-                async for chunk in self._process_streaming_query(messages, all_tools, temperature):
+                async for chunk in self._process_streaming_query(messages, temperature, all_tools):
                     yield chunk
             else:
-                async for chunk in self._process_non_streaming_query(messages, all_tools, temperature):
+                async for chunk in self._process_non_streaming_query(messages, temperature, all_tools):
                     yield chunk
                 
         except Exception as ex:
@@ -503,8 +504,8 @@ class MCPClient:
     async def _process_streaming_query(
         self,
         messages: List[Dict[str, Any]],
-        tools: List[Dict[str, Any]],
-        temperature: float
+        temperature: float = 0.7,
+        tools: List[Dict[str, Any]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Process a query in streaming mode.
         
@@ -518,7 +519,6 @@ class MCPClient:
         """
         current_tool_call = None
         current_tool_args = ""
-        current_message_text = ""
         tool_call_complete = False
         
         # Start streaming response
@@ -592,14 +592,13 @@ class MCPClient:
             # Handle regular text content
             delta = chunk.choices[0].delta
             if hasattr(delta, 'content') and delta.content and not tool_call_complete:
-                current_message_text += delta.content
                 yield delta.content
 
     async def _process_non_streaming_query(
         self,
-        messages: List[Dict[str, Any]],
-        tools: List[Dict[str, Any]],
-        temperature: float
+        messages: list[dict[str, Any]],
+        temperature: float = 0.7,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Process a query in non-streaming mode.
         
@@ -622,15 +621,15 @@ class MCPClient:
             stream=False,
             api_base=self.base_url,
         )
-        
+
         if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
             # Process tool calls
             for tool_call in response.choices[0].message.tool_calls:
-                tool_name = tool_call.function.name
                 tool_args_str = tool_call.function.arguments
-                
+
+                tool_name = tool_call.function.name
                 yield f"\n[Calling tool: {tool_name}]\n"
-                
+
                 # Call the tool and handle the result
                 result_text, updated_messages = await self.handle_tool_call(
                     tool_name,
@@ -638,9 +637,9 @@ class MCPClient:
                     tool_args_str,
                     messages
                 )
-                
+
                 yield f"\n[Tool result: {result_text}]\n"
-                
+
                 # Continue the conversation with the tool result
                 final_response = await litellm.acompletion(
                     model=self.model,
@@ -650,13 +649,11 @@ class MCPClient:
                     stream=False,
                     api_base=self.base_url,
                 )
-                
+
                 if hasattr(final_response.choices[0], 'message') and hasattr(final_response.choices[0].message, 'content'):
                     yield final_response.choices[0].message.content
-        else:
-            # No tool calls, just return the response
-            if hasattr(response.choices[0], 'message') and hasattr(response.choices[0].message, 'content'):
-                yield response.choices[0].message.content
+        elif hasattr(response.choices[0], 'message') and hasattr(response.choices[0].message, 'content'):
+            yield response.choices[0].message.content
 
     async def close(self):
         """Alias for cleanup() for compatibility."""
