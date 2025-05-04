@@ -65,7 +65,7 @@ class MCPClient:
         max_tokens: int = 4096,
         base_url: Optional[str] = None,
         debug: bool = False,
-        model_map: Optional[dict] = None,
+        show_thinking: bool = False,
     ):
         """Initialize the MCP client.
 
@@ -93,6 +93,7 @@ class MCPClient:
         self.model = model
         self.max_tokens = max_tokens
         self.base_url = base_url
+        self.show_thinking = show_thinking
 
         # Setup LiteLLM configuration
         if debug:
@@ -318,7 +319,7 @@ class MCPClient:
             # Add the tool call to messages
             messages.append({
                 "role": "assistant",
-                "content": None,
+                "content": "",
                 "tool_calls": [{
                     "id": tool_id,
                     "type": "function",
@@ -417,6 +418,8 @@ class MCPClient:
 
             # Check if we have tool calls
             if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
+                if self.show_thinking and hasattr(response.choices[0].message, 'content'):
+                    logger.info(f">> {response.choices[0].message.content}")
                 for tool_call in response.choices[0].message.tool_calls:
                     tool_args_str = tool_call.function.arguments
                     tool_id = tool_call.id
@@ -438,8 +441,7 @@ class MCPClient:
                         result_text = f"Error executing tool {tool_name}: {str(ex)}"
                         print(f"[Tool error: {result_text}]")
 
-                    # Add the tool call to messages
-
+                    # add the tool call to messages
                     messages.append({
                         "role": "assistant",
                         "content": "",
@@ -453,7 +455,7 @@ class MCPClient:
                         }]
                     })
 
-                    # Add the tool result to messages
+                    # add the tool result to messages
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_id,
@@ -501,6 +503,153 @@ class MCPClient:
         except Exception as ex:
             logger.exception(f"Error in process_query: {ex}")
             yield f"\n[Error: {str(ex)}]\n"
+    async def stream_complete(
+            self,
+            messages: List[Dict[str, Any]],
+            temperature: float = 0.7,
+            tools: List[Dict[str, Any]] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """Process a query in streaming mode.
+
+        Args:
+            messages: List of messages to send to the model
+            tools: List of available tools
+            temperature: Temperature for model generation
+
+        Yields:
+            Generated text chunks as they become available
+        """
+        if not tools:
+            tools = self.get_available_tools()
+
+        tool_call_complete = False
+        while True:
+            current_tool_call = None
+            current_tool_args = ""
+            tool_call_complete = False
+            # Start streaming response
+            response_stream = await litellm.acompletion(
+                model=self.model,
+                messages=messages,
+                max_tokens=self.max_tokens,
+                temperature=temperature,
+                tools=tools,
+                tool_choice="auto",
+                stream=True,
+                api_base=self.base_url,
+            )
+
+            async for chunk in response_stream:
+                # Check for tool calls
+                if hasattr(chunk, 'tool_calls') and chunk.tool_calls:
+                    # Get the current tool call
+                    for tool_call in chunk.tool_calls:
+                        if not current_tool_call:
+                            current_tool_call = {
+                                "id": tool_call.id,
+                                "name": tool_call.function.name,
+                                "arguments": ""
+                            }
+
+                        # Append the argument json chunk
+                        if hasattr(tool_call.function, 'arguments'):
+                            current_tool_args += tool_call.function.arguments
+
+                        print(f"Current tool args: {current_tool_args}")
+                        # Attempt to parse complete JSON when we have a closing brace
+                        if current_tool_args and '}' in current_tool_args and not tool_call_complete:
+                            try:
+                                # Check if we have complete, valid JSON
+                                json.loads(current_tool_args)
+                                tool_call_complete = True
+
+                                # We have a complete tool call, process it
+                                yield f"\n[Calling tool: {current_tool_call['name']}]\n"
+
+                                # Call the tool and handle the result
+                                result_text, _ = await self.handle_tool_call(
+                                    current_tool_call['name'],
+                                    current_tool_call['id'],
+                                    current_tool_args,
+                                    messages
+                                )
+
+                                yield f"\n[Tool result: {result_text}]\n"
+                                # Add the tool call to messages
+                                messages.append({
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": [{
+                                        "id": tool_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_name,
+                                            "arguments": tool_args_str
+                                        }
+                                    }]
+                                })
+
+                                # Add the tool result to messages
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_id,
+                                    "name": tool_name,
+                                    "content": result_text
+                                })
+                                yield result_text
+
+
+                            except json.JSONDecodeError:
+                                # Not complete JSON yet, continue collecting
+                                pass
+
+                # Handle regular text content
+                delta = chunk.choices[0].delta
+                if hasattr(delta, 'content') and delta.content and not tool_call_complete:
+                    yield delta.content
+                elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                    yield delta.reasoning_content
+                elif hasattr(delta, 'tool_calls') and delta.tool_calls and not tool_call_complete:
+                    for tool_call in delta.tool_calls:
+                        if not current_tool_call:
+                            current_tool_call = {
+                                "id": tool_call.id,
+                                "name": tool_call.function.name,
+                                "arguments": "",
+                            }
+
+                        # Append the argument json chunk
+                        if hasattr(tool_call.function, 'arguments'):
+                            current_tool_args += tool_call.function.arguments
+
+                        # Attempt to parse complete JSON when we have a closing brace
+                        if current_tool_args and '}' in current_tool_args and not tool_call_complete:
+                            try:
+                                # Check if we have complete, valid JSON
+                                json.loads(current_tool_args)
+                                tool_call_complete = True
+
+                                # We have a complete tool call, process it
+                                yield f"\n[Calling tool: {current_tool_call['name']}]\n"
+
+                                # Call the tool and handle the result
+                                result_text, updated_messages = await self.handle_tool_call(
+                                    current_tool_call['name'],
+                                    current_tool_call['id'],
+                                    current_tool_args,
+                                    messages
+                                )
+                                yield f"\n[Tool result: {result_text}]\n"
+
+                            except:
+                                pass
+                else:
+                    # end the turn when we get an empty Delta value
+                    if delte.role is not None:
+                        logger.error(f"unhandled delta: {delta}")
+                    if not tool_call_complete:
+                        return # only return if we have not just completed a tool call
+
     async def _process_streaming_query(
         self,
         messages: List[Dict[str, Any]],
