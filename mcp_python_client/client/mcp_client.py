@@ -523,6 +523,7 @@ class MCPClient:
             tools = self.get_available_tools()
 
         tool_call_complete = False
+        tool_required = False
         while True:
             current_tool_call = None
             current_tool_args = ""
@@ -604,12 +605,18 @@ class MCPClient:
                                 pass
 
                 # Handle regular text content
+                if hasattr(chunk.choices[0], "finish_reason") and chunk.choices[0].finish_reason is not None and chunk.choices[0].finish_reason == "stop":
+                    yield chunk.choices[0]
                 delta = chunk.choices[0].delta
                 if hasattr(delta, 'content') and delta.content and not tool_call_complete:
                     yield delta.content
                 elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                     yield delta.reasoning_content
+                elif hasattr(delta, 'finish_reason') and delta.finish_reason:
+                    logger.info(f'finish_reason: {delta.finish_reason}')
+                    yield delta.finish_reason
                 elif hasattr(delta, 'tool_calls') and delta.tool_calls and not tool_call_complete:
+                    tool_required = True
                     for tool_call in delta.tool_calls:
                         if not current_tool_call:
                             current_tool_call = {
@@ -645,10 +652,10 @@ class MCPClient:
                                 pass
                 else:
                     # end the turn when we get an empty Delta value
-                    if delte.role is not None:
+                    if delta.role is not None:
                         logger.error(f"unhandled delta: {delta}")
-                    if not tool_call_complete:
-                        return # only return if we have not just completed a tool call
+                    elif (tool_required and not tool_call_complete) or not tool_required:
+                        return # only return if we have not just completed a tool call, or it no tools used
 
     async def _process_streaming_query(
         self,
