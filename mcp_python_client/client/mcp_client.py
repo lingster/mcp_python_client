@@ -16,6 +16,7 @@ from mcp.types import Resource, Tool
 
 from .exceptions import MissingConfigError
 from ..config import MCPConfig, ServerConfig
+from app.utils import exponential_retry
 
 # Configure the logger
 logger.remove()
@@ -45,6 +46,8 @@ DEFAULT_MODEL_MAP = {
     }
 }
 
+class LLMStreamError(Exception):
+    pass
 
 class MCPClient:
     """Client for interacting with LLMs and MCP servers.
@@ -529,16 +532,45 @@ class MCPClient:
             current_tool_args = ""
             tool_call_complete = False
             # Start streaming response
-            response_stream = await litellm.acompletion(
-                model=self.model,
-                messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=temperature,
-                tools=tools,
-                tool_choice="auto",
-                stream=True,
-                api_base=self.base_url,
+             
+            @exponential_retry(
+                max_retries=10,
+                base_delay=62.0,
+                max_delay=600.0,
+                jitter=True,
+                retryable_exceptions=(
+                        litellm.InternalServerError,
+                        ConnectionError,
+                        TimeoutError,
+                        litellm.RateLimitError,
+                        litellm.ContextWindowExceededError,
+                ),
+                logger=logger,
             )
+            async def get_stream():
+                try:
+                    return await litellm.acompletion(
+                        model=self.model,
+                        messages=messages,
+                        max_tokens=self.max_tokens,
+                        temperature=temperature,
+                        tools=tools,
+                        tool_choice="auto",
+                        stream=True,
+                        api_base=self.base_url,
+                        api_key=self.api_key
+                    )
+                except litellm.RateLimitError as ex:
+                    logger.error(f'got rate limited will retry after a minute: {ex}')
+                    raise
+                except Exception as ex:
+                    logger.error(f"unhandled exception: {ex}")
+                    raise
+            
+            response_stream = await get_stream()   
+            if not response_stream:
+                logger.error(f"problem getting stream from llm")
+                raise LLMStreamError()
 
             async for chunk in response_stream:
                 # Check for tool calls
