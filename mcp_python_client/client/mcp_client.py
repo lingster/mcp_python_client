@@ -685,7 +685,7 @@ class MCPClient:
                                 yield f"\n**{current_tool_call['name']}**\n####Request:\n```tool_request\n{pformat(current_tool_args, indent=2, width=80, sort_dicts=False)}\n```\n"
 
                                 # Call the tool and handle the result
-                                result_text, updated_messages = await self.handle_tool_call(
+                                result_text, messages = await self.handle_tool_call(
                                     current_tool_call['name'],
                                     current_tool_call['id'],
                                     current_tool_args,
