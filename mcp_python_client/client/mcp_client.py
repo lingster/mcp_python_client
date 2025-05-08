@@ -532,6 +532,7 @@ class MCPClient:
             tool_call_complete = False
             # Start streaming response
             start_reason = True
+            reason_complete = True
             response_stream = await litellm.acompletion(
                 model=self.model,
                 messages=messages,
@@ -612,11 +613,17 @@ class MCPClient:
                     yield chunk.choices[0]
                 delta = chunk.choices[0].delta
                 if hasattr(delta, 'content') and delta.content and not tool_call_complete:
-                    yield delta.content
+                    if not reason_complete:
+                        reason_complete = True
+                        start_reason = False
+                        yield "</think>\n" + delta.content
+                    else:
+                        yield delta.content
                 elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                     if start_reason:
                         start_reason = False
-                        yield  "<think>" + delta.reasoning_content
+                        reason_complete = False
+                        yield  "<think>\n" + delta.reasoning_content
                     else:
                         yield delta.reasoning_content
                 elif hasattr(delta, 'finish_reason') and delta.finish_reason:
