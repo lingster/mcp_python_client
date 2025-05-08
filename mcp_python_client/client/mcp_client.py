@@ -616,11 +616,11 @@ class MCPClient:
                                     "role": "assistant",
                                     "content": "",
                                     "tool_calls": [{
-                                        "id": tool_id,
+                                        "id": tool_call.id,
                                         "type": "function",
                                         "function": {
-                                            "name": tool_name,
-                                            "arguments": tool_args_str
+                                            "name": tool_call.function.name,
+                                            "arguments": current_tool_args
                                         }
                                     }]
                                 })
@@ -628,8 +628,8 @@ class MCPClient:
                                 # Add the tool result to messages
                                 messages.append({
                                     "role": "tool",
-                                    "tool_call_id": tool_id,
-                                    "name": tool_name,
+                                    "tool_call_id": tool_call.id,
+                                    "name": tool_call.function.name,
                                     "content": result_text
                                 })
                                 yield result_text
