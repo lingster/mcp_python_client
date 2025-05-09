@@ -417,6 +417,7 @@ class MCPClient:
                 tools=tools,
                 tool_choice="auto",
                 api_base=self.base_url,
+                api_key=self.api_key,
             )
             logger.info(f"Received response in {time.monotonic() - start_time:.2f}s")
 
@@ -641,7 +642,7 @@ class MCPClient:
 
                 # Handle regular text content
                 if hasattr(chunk.choices[0], "finish_reason") and chunk.choices[0].finish_reason is not None and chunk.choices[0].finish_reason == "stop":
-                    yield chunk.choices[0]
+                    yield chunk.choices[0]["finish_reason"]
                 delta = chunk.choices[0].delta
                 if hasattr(delta, 'content') and delta.content and not tool_call_complete:
                     if not reason_complete:
@@ -692,7 +693,8 @@ class MCPClient:
                                     messages
                                 )
                                 yield f"\nResponse:\n```tool_response\n{pformat(result_text, indent=2, width=80, sort_dicts=False)}\n```\n"
-
+                            except json.JSONDecodeError as ex:
+                                logger.error(f"unable to decode json, will continue getting data: {ex}")
                             except:
                                 pass
                 else:
@@ -700,7 +702,14 @@ class MCPClient:
                     if delta.role is not None:
                         logger.error(f"unhandled delta: {delta}")
                     elif (tool_required and not tool_call_complete) or not tool_required:
-                        return # only return if we have not just completed a tool call, or it no tools used
+                        if hasattr(chunk.choices[0], "finish_reason"):
+                            msg_len = sum([len(m["content"]) for m in messages])
+                            yield chunk.choices[0]["finish_reason"]
+                            return
+                        elif hasattr(messages[-1], "role") and messages[-1]["role"] != "assistant":
+                            logger.error(f"invalid last message, role should be assistant: {messages[-1]} - will continue")
+                        else:
+                            return # only return if we have not just completed a tool call, or it no tools used
 
 
     async def _process_non_streaming_query(
