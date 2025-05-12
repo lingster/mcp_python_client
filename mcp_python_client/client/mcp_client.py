@@ -417,6 +417,7 @@ class MCPClient:
                 tools=tools,
                 tool_choice="auto",
                 api_base=self.base_url,
+                api_key=self.api_key,
             )
             logger.info(f"Received response in {time.monotonic() - start_time:.2f}s")
 
@@ -533,8 +534,10 @@ class MCPClient:
             current_tool_call = None
             current_tool_args = ""
             tool_call_complete = False
-            start_reason = True  # flag to know if we are in thinking mode output
-             
+            # Start streaming response
+            start_reason = True  # flags when llm is outputting reasoning/thinking
+            reason_complete = True # flags when the thinking part is done
+            
             @exponential_retry(
                 max_retries=10,
                 base_delay=62.0,
@@ -615,11 +618,11 @@ class MCPClient:
                                     "role": "assistant",
                                     "content": "",
                                     "tool_calls": [{
-                                        "id": tool_id,
+                                        "id": tool_call.id,
                                         "type": "function",
                                         "function": {
-                                            "name": tool_name,
-                                            "arguments": tool_args_str
+                                            "name": tool_call.function.name,
+                                            "arguments": current_tool_args
                                         }
                                     }]
                                 })
@@ -627,8 +630,8 @@ class MCPClient:
                                 # Add the tool result to messages
                                 messages.append({
                                     "role": "tool",
-                                    "tool_call_id": tool_id,
-                                    "name": tool_name,
+                                    "tool_call_id": tool_call.id,
+                                    "name": tool_call.function.name,
                                     "content": result_text
                                 })
                                 yield result_text
@@ -640,14 +643,20 @@ class MCPClient:
 
                 # Handle regular text content
                 if hasattr(chunk.choices[0], "finish_reason") and chunk.choices[0].finish_reason is not None and chunk.choices[0].finish_reason == "stop":
-                    yield chunk.choices[0]
+                    yield chunk.choices[0]["finish_reason"]
                 delta = chunk.choices[0].delta
                 if hasattr(delta, 'content') and delta.content and not tool_call_complete:
-                    yield delta.content
+                    if not reason_complete:
+                        reason_complete = True
+                        start_reason = False
+                        yield "</think>\n" + delta.content
+                    else:
+                        yield delta.content
                 elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                     if start_reason:
                         start_reason = False
-                        yield  "<think>" + delta.reasoning_content
+                        reason_complete = False
+                        yield  "<think>\n" + delta.reasoning_content
                     else:
                         yield delta.reasoning_content
                 elif hasattr(delta, 'finish_reason') and delta.finish_reason:
@@ -678,14 +687,15 @@ class MCPClient:
                                 yield f"\n**{current_tool_call['name']}**\n####Request:\n```tool_request\n{pformat(current_tool_args, indent=2, width=80, sort_dicts=False)}\n```\n"
 
                                 # Call the tool and handle the result
-                                result_text, updated_messages = await self.handle_tool_call(
+                                result_text, messages = await self.handle_tool_call(
                                     current_tool_call['name'],
                                     current_tool_call['id'],
                                     current_tool_args,
                                     messages
                                 )
                                 yield f"\nResponse:\n```tool_response\n{pformat(result_text, indent=2, width=80, sort_dicts=False)}\n```\n"
-
+                            except json.JSONDecodeError as ex:
+                                logger.error(f"unable to decode json, will continue getting data: {ex}")
                             except:
                                 pass
                 else:
@@ -693,7 +703,14 @@ class MCPClient:
                     if delta.role is not None:
                         logger.error(f"unhandled delta: {delta}")
                     elif (tool_required and not tool_call_complete) or not tool_required:
-                        return # only return if we have not just completed a tool call, or it no tools used
+                        if hasattr(chunk.choices[0], "finish_reason"):
+                            msg_len = sum([len(m["content"]) for m in messages])
+                            yield chunk.choices[0]["finish_reason"]
+                            return
+                        elif hasattr(messages[-1], "role") and messages[-1]["role"] != "assistant":
+                            logger.error(f"invalid last message, role should be assistant: {messages[-1]} - will continue")
+                        else:
+                            return # only return if we have not just completed a tool call, or it no tools used
 
 
     async def _process_non_streaming_query(
