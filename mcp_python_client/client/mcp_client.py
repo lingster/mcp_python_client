@@ -533,7 +533,7 @@ class MCPClient:
             current_tool_call = None
             current_tool_args = ""
             tool_call_complete = False
-            # Start streaming response
+            start_reason = True  # flag to know if we are in thinking mode output
              
             @exponential_retry(
                 max_retries=10,
