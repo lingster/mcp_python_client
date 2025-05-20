@@ -11,7 +11,7 @@ class ServerConfig(BaseModel):
     
     command: str
     args: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] | None = Field(default_factory=dict)
 
 
 class MCPConfig(BaseModel):
