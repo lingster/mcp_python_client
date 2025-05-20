@@ -76,7 +76,6 @@ class MCPClient:
             top_p: float = 0.8,
             top_k: int = 20,
             min_p: float = 0.0,
-
     ):
         """Initialize the MCP client.
 
@@ -87,7 +86,6 @@ class MCPClient:
             max_tokens: Maximum tokens for model completion.
             base_url: Base URL for API, e.g., "http://localhost:11434" for Ollama
             debug: Whether to enable debug logging.
-            model_map: Optional custom model map for LiteLLM.
         """
         try:
             if config_path:
@@ -386,7 +384,6 @@ class MCPClient:
             self,
             query: str,
             system_prompt: str = "You are a helpful assistant.",
-            temperature: float = self.temperature,
             tools: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Process a query using LiteLLM and available tools.
@@ -394,7 +391,6 @@ class MCPClient:
         Args:
             query: User query to process
             system_prompt: Optional system prompt
-            temperature: Temperature for model generation
             tools: Optional list of tools
 
         Returns:
@@ -409,11 +405,10 @@ class MCPClient:
         ]
 
         # Synchronous implementation - run until we get a final response
-        return await self.complete(messages, temperature, tools)
+        return await self.complete(messages, tools)
 
     async def complete(self,
                        messages: list[dict],
-                       temperature: float = self.temperature,
                        tools: list[dict[str, Any]] | None = None):
         # We need to handle multiple turns of conversation potentially
         if not tools:
@@ -425,7 +420,7 @@ class MCPClient:
                 model=self.model,
                 messages=messages,
                 max_tokens=self.max_tokens,
-                temperature=temperature,
+                temperature=self.temperature,
                 tools=tools,
                 tool_choice="auto",
                 api_base=self.base_url,
@@ -489,7 +484,6 @@ class MCPClient:
             self,
             query: str,
             system_prompt: str = "You are a helpful assistant.",
-            temperature: float = self.temperature,
             stream: bool = True
     ) -> AsyncGenerator[str, None]:
         """Process a query using LiteLLM and available tools, asynchronously.
@@ -497,7 +491,6 @@ class MCPClient:
         Args:
             query: User query to process
             system_prompt: Optional system prompt
-            temperature: Temperature for model generation
             stream: Whether to stream the response
 
         Yields:
@@ -514,10 +507,10 @@ class MCPClient:
         # Initial call to get model response or tool call
         try:
             if stream:
-                async for chunk in self.stream_complete(messages, temperature, all_tools):
+                async for chunk in self.stream_complete(messages, all_tools):
                     yield chunk
             else:
-                async for chunk in self._process_non_streaming_query(messages, temperature, all_tools):
+                async for chunk in self._process_non_streaming_query(messages, all_tools):
                     yield chunk
 
         except Exception as ex:
@@ -527,7 +520,6 @@ class MCPClient:
     async def stream_complete(
             self,
             messages: List[Dict[str, Any]],
-            temperature: float = self.temperature,
             tools: List[Dict[str, Any]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Process a query in streaming mode.
@@ -535,7 +527,6 @@ class MCPClient:
         Args:
             messages: List of messages to send to the model
             tools: List of available tools
-            temperature: Temperature for model generation
 
         Yields:
             Generated text chunks as they become available
@@ -573,7 +564,7 @@ class MCPClient:
                         model=self.model,
                         messages=messages,
                         max_tokens=self.max_tokens,
-                        temperature=temperature,
+                        temperature=self.temperature,
                         tools=tools,
                         tool_choice="auto",
                         stream=True,
@@ -735,7 +726,6 @@ class MCPClient:
     async def _process_non_streaming_query(
             self,
             messages: list[dict[str, Any]],
-            temperature: float = self.temperature,
             tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Process a query in non-streaming mode.
@@ -743,8 +733,7 @@ class MCPClient:
         Args:
             messages: List of messages to send to the model
             tools: List of available tools
-            temperature: Temperature for model generation
-            
+
         Yields:
             Generated text chunks
         """
@@ -753,7 +742,7 @@ class MCPClient:
             model=self.model,
             messages=messages,
             max_tokens=self.max_tokens,
-            temperature=temperature,
+            temperature=self.temperature,
             tools=tools,
             tool_choice="auto",
             stream=False,
@@ -786,7 +775,7 @@ class MCPClient:
                     model=self.model,
                     messages=updated_messages,
                     max_tokens=self.max_tokens,
-                    temperature=temperature,
+                    temperature=self.temperature,
                     stream=False,
                     api_base=self.base_url,
                     top_p=self.top_p,

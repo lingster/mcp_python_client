@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-python-client"
-version = "0.1.5"
+version = "0.1.6"
 description = "Python client for interacting with MCP servers and LLMs"
 authors = [
     {name = "Ling Li", email = "email@ling-li.com"},
@@ -33,7 +33,10 @@ dependencies = [
     "litellm>=1.63.14",
     "loguru>=0.7.3",
     "mcp>=0.0.17",
+    "mypy>=1.15.0",
     "pydantic>=2.0.0",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.26.0",
     "python-dotenv>=1.0.0",
 ]
 
