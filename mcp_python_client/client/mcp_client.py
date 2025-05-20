@@ -47,8 +47,10 @@ DEFAULT_MODEL_MAP = {
     }
 }
 
+
 class LLMStreamError(Exception):
     pass
+
 
 class MCPClient:
     """Client for interacting with LLMs and MCP servers.
@@ -61,15 +63,20 @@ class MCPClient:
     TOOL_NAME_SEPARATOR = "__"
 
     def __init__(
-        self,
-        config_path: Optional[str] = None,
-        mcp_servers: Optional[dict] = None,
-        api_key: Optional[str] = None,
-        model: str = "anthropic/claude-3-7-sonnet-20241024",
-        max_tokens: int = 4096,
-        base_url: Optional[str] = None,
-        debug: bool = False,
-        show_thinking: bool = False,
+            self,
+            config_path: Optional[str] = None,
+            mcp_servers: Optional[dict] = None,
+            api_key: Optional[str] = None,
+            model: str = "anthropic/claude-3-7-sonnet-20241024",
+            max_tokens: int = 4096,
+            base_url: Optional[str] = None,
+            debug: bool = False,
+            show_thinking: bool = False,
+            temperature: float = 0.7,
+            top_p: float = 0.8,
+            top_k: int = 20,
+            min_p: float = 0.0,
+
     ):
         """Initialize the MCP client.
 
@@ -93,16 +100,19 @@ class MCPClient:
             # Create an empty config if none is found - allows using the client without MCP servers
             self.config = MCPConfig()
             logger.warning("No MCP server configuration found. The client will operate without MCP servers.")
-        
+
         self.model = model
         self.max_tokens = max_tokens
         self.base_url = base_url
         self.show_thinking = show_thinking
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.min_p = min_p
 
         # Setup LiteLLM configuration
         if debug:
             litellm._turn_on_debug()
-        
 
         # Set API key based on model provider
         if base_url:
@@ -130,10 +140,10 @@ class MCPClient:
         self.exit_stack = AsyncExitStack()
         self.sessions: Dict[str, ClientSession] = {}
         self.server_tools: Dict[str, List[Tool]] = {}
-        
+
         # Map fully-qualified tool names to (server_name, tool_name) tuples
         self.tool_map: Dict[str, Tuple[str, str]] = {}
-        
+
     async def connect_to_server(self, server_name: str) -> None:
         """Connect to a specific MCP server.
 
@@ -182,14 +192,14 @@ class MCPClient:
         """
         server_names = self.config.list_servers()
         connection_errors = []
-        
+
         for server_name in server_names:
             try:
                 await self.connect_to_server(server_name)
             except Exception as e:
                 logger.error(f"Failed to connect to server '{server_name}': {str(e)}")
                 connection_errors.append((server_name, str(e)))
-        
+
         if connection_errors and len(connection_errors) == len(server_names):
             # All server connections failed
             error_details = "\n".join([f"- {name}: {error}" for name, error in connection_errors])
@@ -207,14 +217,14 @@ class MCPClient:
         for server_name, server_tools in self.server_tools.items():
             # Normalize server name for tool naming (replace hyphens with underscores)
             normalized_server = server_name.replace('-', '_')
-            
+
             for tool in server_tools:
                 # Create a consistent tool name with clear separator
                 fq_tool_name = f"{normalized_server}{self.TOOL_NAME_SEPARATOR}{tool.name}"
-                
+
                 # Store the mapping from full qualified name to (server_name, tool_name)
                 self.tool_map[fq_tool_name] = (server_name, tool.name)
-                
+
                 # Format tool for LiteLLM (follows OpenAI's format)
                 tools.append({
                     "type": "function",
@@ -227,7 +237,7 @@ class MCPClient:
 
         logger.debug(f"Registered tools: {self.tool_map}")
         return tools
-        
+
     async def call_tool(self, full_tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Call a specific tool on an MCP server.
 
@@ -244,7 +254,7 @@ class MCPClient:
         """
         logger.info(f"Calling tool: {full_tool_name} with args: {arguments}")
         logger.debug(f"Available tool map: {self.tool_map}")
-        
+
         if full_tool_name in self.tool_map:
             # Use the mapping we created in get_available_tools
             server_name, tool_name = self.tool_map[full_tool_name]
@@ -254,21 +264,23 @@ class MCPClient:
                 parts = full_tool_name.split(self.TOOL_NAME_SEPARATOR, 1)
                 if len(parts) != 2:
                     raise ValueError(f"Invalid tool name format: {full_tool_name}")
-                
+
                 normalized_server, tool_name = parts
                 # Convert back normalized server name to actual server name
                 server_name = normalized_server.replace('_', '-')
-                
-                logger.warning(f"Tool {full_tool_name} not in tool map, parsed as server:{server_name}, tool:{tool_name}")
+
+                logger.warning(
+                    f"Tool {full_tool_name} not in tool map, parsed as server:{server_name}, tool:{tool_name}")
             except ValueError:
-                raise ValueError(f"Invalid tool name format: {full_tool_name}. Expected 'server_name{self.TOOL_NAME_SEPARATOR}tool_name'")
+                raise ValueError(
+                    f"Invalid tool name format: {full_tool_name}. Expected 'server_name{self.TOOL_NAME_SEPARATOR}tool_name'")
 
         if server_name not in self.sessions:
             raise ValueError(f"Server '{server_name}' not connected. Available servers: {list(self.sessions.keys())}")
 
         session = self.sessions[server_name]
         logger.debug(f"Executing {tool_name} on server {server_name}")
-        
+
         try:
             result = await session.call_tool(tool_name, arguments)
         except Exception as e:
@@ -285,7 +297,7 @@ class MCPClient:
             for content in result.content:
                 if hasattr(content, "text") and content.text:
                     text_chunks.append(content.text)
-            
+
             if text_chunks:
                 output["text"] = "\n".join(text_chunks)
 
@@ -293,13 +305,13 @@ class MCPClient:
             output["error"] = True
 
         return output
-        
+
     async def handle_tool_call(
-        self, 
-        tool_name: str, 
-        tool_id: str, 
-        tool_args: str, 
-        messages: List[Dict[str, Any]]
+            self,
+            tool_name: str,
+            tool_id: str,
+            tool_args: str,
+            messages: List[Dict[str, Any]]
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """Handle a tool call, execute it and prepare messages for further processing.
         
@@ -315,11 +327,11 @@ class MCPClient:
         try:
             tool_args_dict = json.loads(tool_args)
             tool_result = await self.call_tool(tool_name, tool_args_dict)
-            
+
             result_text = tool_result.get("text", "Tool executed successfully")
             if tool_result.get("error"):
                 result_text = f"Error executing tool: {result_text}"
-            
+
             # Add the tool call to messages
             messages.append({
                 "role": "assistant",
@@ -333,7 +345,7 @@ class MCPClient:
                     }
                 }]
             })
-            
+
             # Add the tool result to messages
             messages.append({
                 "role": "tool",
@@ -341,12 +353,12 @@ class MCPClient:
                 "name": tool_name,
                 "content": result_text
             })
-            
+
             return result_text, messages
         except Exception as ex:
             logger.exception(f"Error calling tool: {ex}")
             error_message = f"Error executing tool {tool_name}: {str(ex)}"
-            
+
             # Even with an error, we still need to update the messages
             messages.append({
                 "role": "assistant",
@@ -360,22 +372,22 @@ class MCPClient:
                     }
                 }]
             })
-            
+
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_id,
                 "name": tool_name,
                 "content": error_message
             })
-            
+
             return error_message, messages
-            
+
     async def process_query(
-        self,
-        query: str,
-        system_prompt: str = "You are a helpful assistant.",
-        temperature: float = 0.7,
-        tools: Optional[List[Dict[str, Any]]] = None,
+            self,
+            query: str,
+            system_prompt: str = "You are a helpful assistant.",
+            temperature: float = self.temperature,
+            tools: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Process a query using LiteLLM and available tools.
 
@@ -400,9 +412,9 @@ class MCPClient:
         return await self.complete(messages, temperature, tools)
 
     async def complete(self,
-                 messages: list[dict],
-                 temperature: float = 0.7,
-                 tools: list[dict[str, Any]] | None = None):
+                       messages: list[dict],
+                       temperature: float = self.temperature,
+                       tools: list[dict[str, Any]] | None = None):
         # We need to handle multiple turns of conversation potentially
         if not tools:
             tools = self.get_available_tools()
@@ -418,6 +430,9 @@ class MCPClient:
                 tool_choice="auto",
                 api_base=self.base_url,
                 api_key=self.api_key,
+                top_p=self.top_p,
+                top_k=self.top_k,
+                min_p=self.min_p,
             )
             logger.info(f"Received response in {time.monotonic() - start_time:.2f}s")
 
@@ -471,11 +486,11 @@ class MCPClient:
                 return response.choices[0].message.content
 
     async def aprocess_query(
-        self,
-        query: str,
-        system_prompt: str = "You are a helpful assistant.",
-        temperature: float = 0.7,
-        stream: bool = True
+            self,
+            query: str,
+            system_prompt: str = "You are a helpful assistant.",
+            temperature: float = self.temperature,
+            stream: bool = True
     ) -> AsyncGenerator[str, None]:
         """Process a query using LiteLLM and available tools, asynchronously.
 
@@ -495,7 +510,7 @@ class MCPClient:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": query}
         ]
-        
+
         # Initial call to get model response or tool call
         try:
             if stream:
@@ -504,7 +519,7 @@ class MCPClient:
             else:
                 async for chunk in self._process_non_streaming_query(messages, temperature, all_tools):
                     yield chunk
-                
+
         except Exception as ex:
             logger.exception(f"Error in process_query: {ex}")
             yield f"\n[Error: {str(ex)}]\n"
@@ -512,7 +527,7 @@ class MCPClient:
     async def stream_complete(
             self,
             messages: List[Dict[str, Any]],
-            temperature: float = 0.7,
+            temperature: float = self.temperature,
             tools: List[Dict[str, Any]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Process a query in streaming mode.
@@ -536,7 +551,8 @@ class MCPClient:
             tool_call_complete = False
             # Start streaming response
             start_reason = True  # flags when llm is outputting reasoning/thinking
-            reason_complete = True # flags when the thinking part is done
+            reason_complete = True  # flags when the thinking part is done
+
             @exponential_retry(
                 max_retries=10,
                 base_delay=62.0,
@@ -562,7 +578,10 @@ class MCPClient:
                         tool_choice="auto",
                         stream=True,
                         api_base=self.base_url,
-                        api_key=self.api_key
+                        api_key=self.api_key,
+                        top_p=self.top_p,
+                        top_k=self.top_k,
+                        min_p=self.min_p,
                     )
                 except litellm.RateLimitError as ex:
                     logger.error(f'got rate limited will retry after a minute: {ex}')
@@ -570,8 +589,8 @@ class MCPClient:
                 except Exception as ex:
                     logger.error(f"unhandled exception: {ex}")
                     raise
-            
-            response_stream = await get_stream()   
+
+            response_stream = await get_stream()
             if not response_stream:
                 logger.error(f"problem getting stream from llm")
                 raise LLMStreamError()
@@ -641,7 +660,8 @@ class MCPClient:
                                 pass
 
                 # Handle regular text content
-                if hasattr(chunk.choices[0], "finish_reason") and chunk.choices[0].finish_reason is not None and chunk.choices[0].finish_reason == "stop":
+                if hasattr(chunk.choices[0], "finish_reason") and chunk.choices[0].finish_reason is not None and \
+                        chunk.choices[0].finish_reason == "stop":
                     yield chunk.choices[0]["finish_reason"]
                 delta = chunk.choices[0].delta
                 if hasattr(delta, 'content') and delta.content and not tool_call_complete:
@@ -655,7 +675,7 @@ class MCPClient:
                     if start_reason:
                         start_reason = False
                         reason_complete = False
-                        yield  "<think>\n" + delta.reasoning_content
+                        yield "<think>\n" + delta.reasoning_content
                     else:
                         yield delta.reasoning_content
                 elif hasattr(delta, 'finish_reason') and delta.finish_reason:
@@ -707,16 +727,16 @@ class MCPClient:
                             yield chunk.choices[0]["finish_reason"]
                             return
                         elif hasattr(messages[-1], "role") and messages[-1]["role"] != "assistant":
-                            logger.error(f"invalid last message, role should be assistant: {messages[-1]} - will continue")
+                            logger.error(
+                                f"invalid last message, role should be assistant: {messages[-1]} - will continue")
                         else:
-                            return # only return if we have not just completed a tool call, or it no tools used
-
+                            return  # only return if we have not just completed a tool call, or it no tools used
 
     async def _process_non_streaming_query(
-        self,
-        messages: list[dict[str, Any]],
-        temperature: float = 0.7,
-        tools: list[dict[str, Any]] | None = None,
+            self,
+            messages: list[dict[str, Any]],
+            temperature: float = self.temperature,
+            tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Process a query in non-streaming mode.
         
@@ -738,6 +758,9 @@ class MCPClient:
             tool_choice="auto",
             stream=False,
             api_base=self.base_url,
+            top_p=self.top_p,
+            top_k=self.top_k,
+            min_p=self.min_p,
         )
 
         if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
@@ -766,9 +789,13 @@ class MCPClient:
                     temperature=temperature,
                     stream=False,
                     api_base=self.base_url,
+                    top_p=self.top_p,
+                    top_k=self.top_k,
+                    min_p=self.min_p,
                 )
 
-                if hasattr(final_response.choices[0], 'message') and hasattr(final_response.choices[0].message, 'content'):
+                if hasattr(final_response.choices[0], 'message') and hasattr(final_response.choices[0].message,
+                                                                             'content'):
                     yield final_response.choices[0].message.content
         elif hasattr(response.choices[0], 'message') and hasattr(response.choices[0].message, 'content'):
             yield response.choices[0].message.content
@@ -776,7 +803,7 @@ class MCPClient:
     async def close(self):
         """Alias for cleanup() for compatibility."""
         await self.cleanup()
-        
+
     async def aclose(self):
         """Alias for cleanup() for compatibility."""
         await self.cleanup()
