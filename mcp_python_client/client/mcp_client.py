@@ -4,18 +4,16 @@ import os
 import sys
 import json
 import time
-import asyncio
 from loguru import logger
 from contextlib import AsyncExitStack
-from typing import Any, Dict, List, Optional, AsyncGenerator, Tuple, Union, cast, Callable
+from typing import Any, Dict, List, Optional, AsyncGenerator, Tuple
 
 import litellm
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import Resource, Tool
+from mcp.types import Tool
 
-from .exceptions import MissingConfigError
-from ..config import MCPConfig, ServerConfig
+from ..config import MCPConfig
 from .utils import exponential_retry
 from pprint import pformat
 
@@ -416,6 +414,16 @@ class MCPClient:
         while True:
             # Call LLM with current messages
             start_time = time.monotonic()
+            kwargs = {}
+            if self.top_p:
+                kwargs['top_p'] = self.top_p
+            if self.top_k:
+                kwargs['top_k'] = self.top_k
+            if self.min_p:
+                kwargs['min_p'] = self.min_p
+            if self.base_url:
+                kwargs['api_base'] = self.base_url
+
             response = litellm.completion(
                 model=self.model,
                 messages=messages,
@@ -423,11 +431,8 @@ class MCPClient:
                 temperature=self.temperature,
                 tools=tools,
                 tool_choice="auto",
-                api_base=self.base_url,
                 api_key=self.api_key,
-                top_p=self.top_p,
-                top_k=self.top_k,
-                min_p=self.min_p,
+                **kwargs,
             )
             logger.info(f"Received response in {time.monotonic() - start_time:.2f}s")
 
@@ -560,6 +565,15 @@ class MCPClient:
             )
             async def get_stream():
                 try:
+                    kwargs = {}
+                    if self.top_p:
+                        kwargs['top_p'] = self.top_p
+                    if self.top_k:
+                        kwargs['top_k'] = self.top_k
+                    if self.min_p:
+                        kwargs['min_p'] = self.min_p
+                    if self.base_url:
+                        kwargs['api_base'] = self.base_url
                     return await litellm.acompletion(
                         model=self.model,
                         messages=messages,
@@ -568,11 +582,8 @@ class MCPClient:
                         tools=tools,
                         tool_choice="auto",
                         stream=True,
-                        api_base=self.base_url,
                         api_key=self.api_key,
-                        top_p=self.top_p,
-                        top_k=self.top_k,
-                        min_p=self.min_p,
+                        **kwargs,
                     )
                 except litellm.RateLimitError as ex:
                     logger.error(f'got rate limited will retry after a minute: {ex}')
@@ -738,6 +749,15 @@ class MCPClient:
             Generated text chunks
         """
         # Non-streaming mode
+        kwargs = {}
+        if self.top_p:
+            kwargs['top_p'] = self.top_p
+        if self.top_k:
+            kwargs['top_k'] = self.top_k
+        if self.min_p:
+            kwargs['min_p'] = self.min_p
+        if self.base_url:
+            kwargs['api_base'] = self.base_url
         response = await litellm.acompletion(
             model=self.model,
             messages=messages,
@@ -746,10 +766,8 @@ class MCPClient:
             tools=tools,
             tool_choice="auto",
             stream=False,
-            api_base=self.base_url,
-            top_p=self.top_p,
-            top_k=self.top_k,
-            min_p=self.min_p,
+            api_key=self.api_key,
+            **kwargs,
         )
 
         if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
@@ -777,10 +795,8 @@ class MCPClient:
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                     stream=False,
-                    api_base=self.base_url,
-                    top_p=self.top_p,
-                    top_k=self.top_k,
-                    min_p=self.min_p,
+                    api_key=self.api_key,
+                    **kwargs,
                 )
 
                 if hasattr(final_response.choices[0], 'message') and hasattr(final_response.choices[0].message,
